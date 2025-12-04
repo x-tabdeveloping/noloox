@@ -179,7 +179,6 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
         NotFittedException
             If the model is not fitted, an exception will be raised
         """
-        self._check_fitted()
         # Converting X into sparse array if it isn't one already.
         X = spr.csr_matrix(X)
         sample_max_unique_words = np.max(np.diff(X.indptr))
@@ -234,7 +233,7 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
         NotFittedException
             If the model is not fitted, an exception will be raised
         """
-        return np.argmax(self.transform(X), axis=1)
+        return np.argmax(self.predict_proba(X), axis=1)
 
     def fit_transform(
         self,
