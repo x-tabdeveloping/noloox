@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import random
 from typing import Optional
 
+import jax
 import numpy as np
 import scipy.sparse as spr
 from sklearn.base import BaseEstimator, ClusterMixin, DensityMixin
@@ -35,7 +37,7 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
     ----------
     n_components: int
         Number of mixture components in the model.
-    n_iterations: int, default 50
+    n_iter: int, default 50
         Number of iterations during fitting.
         If you find your results are unsatisfactory, increase this number.
     alpha: float, default 0.1
@@ -59,14 +61,14 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
     def __init__(
         self,
         n_components: int,
-        n_iterations: int = 50,
+        n_iter: int = 50,
         alpha: float = 0.1,
         beta: float = 0.1,
         random_state: Optional[int] = None,
     ):
         super().__init__()
         self.n_components = n_components
-        self.n_iterations = n_iterations
+        self.n_iter = n_iter
         self.alpha = alpha
         self.beta = beta
         self.random_state = random_state
@@ -90,7 +92,7 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
         """
         return {
             "n_components": self.n_components,
-            "n_iterations": self.n_iterations,
+            "n_iter": self.n_iter,
             "alpha": self.alpha,
             "beta": self.beta,
         }
@@ -142,8 +144,19 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
             doc_unique_word_counts=doc_unique_word_counts,
             max_unique_words=self.max_unique_words,
         )
-        fit_model(
-            n_iter=self.n_iterations,
+        if self.random_state is not None:
+            key = jax.random.key(self.random_state)
+        else:
+            key = jax.random.key(random.randint(0, 1000))
+        (
+            random_key,
+            self.doc_clusters,
+            self.cluster_doc_count,
+            self.components_,
+            self.cluster_word_count,
+        ) = fit_model(
+            random_key=key,
+            n_iter=self.n_iter,
             alpha=self.alpha,
             beta=self.beta,
             n_clusters=self.n_components,
@@ -157,7 +170,13 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
             cluster_word_distribution=self.components_,
             max_unique_words=self.max_unique_words,
         )
-        self.weights_ = self.cluster_doc_count / np.sum(self.cluster_doc_count)
+        self.weights_ = np.asarray(self.cluster_doc_count) / np.sum(
+            self.cluster_doc_count
+        )
+        self.doc_clusters = np.asarray(self.doc_clusters)
+        self.cluster_doc_count = np.asarray(self.cluster_doc_count)
+        self.components_ = np.asarray(self.components_)
+        self.cluster_word_count = np.asarray(self.cluster_word_count)
         return self
 
     def predict_proba(self, X) -> np.ndarray:
@@ -189,10 +208,9 @@ class DirichletMultinomialMixture(BaseEstimator, ClusterMixin, DensityMixin):
         doc_words_count = np.sum(doc_unique_word_counts, axis=1)
         n_docs = X.shape[0]
         predictions = []
+        _predict_doc = jax.jit(predict_doc)
         for i_doc in range(n_docs):
-            pred = np.zeros(self.n_components)
-            predict_doc(
-                probabilities=pred,
+            pred = _predict_doc(
                 i_document=i_doc,
                 doc_unique_words=doc_unique_words,
                 doc_unique_word_counts=doc_unique_word_counts,
