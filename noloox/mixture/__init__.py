@@ -1,2 +1,2 @@
 from .dmm import DirichletMultinomialMixture
-from .tmm import StudentsTMixture
+from .tmm import CauchyMixture, StudentsTMixture

@@ -87,7 +87,7 @@ def _m_step(X, resp, E_gamma, scale_, scale_cholesky_, df_, reg_covar):
 
 class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
     """Student's T Mixture Model.
-    This class allows you to estimate a TMM over your data.
+    This class allows you to estimate a mixture of multivariate t-distributions over your data.
 
     Parameters
     ----------
@@ -99,12 +99,15 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         Non-negative regularization added to the diagonal of covariance. Allows to assure that the covariance matrices are all positive.
     max_iter: int, default=1000
         The number of EM iterations to perform.
+    df: float, default=4.0
+        Degrees of freedom for the t-Distributions.
+    random_state: int, default=None
+        Random state for reproducibility.
 
     Attributes
     ----------
     weights_: array-like of shape (n_components,)
         The weights of each mixture components.
-
     means_: array-like of shape (n_components, n_features)
         The mean of each mixture component.
     n_iter_: int
@@ -121,7 +124,6 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         max_iter: int = 1000,
         df=4.0,
         random_state=None,
-        verbose=False,
     ):
         super().__init__()
         self.start_df_ = float(df)
@@ -131,7 +133,6 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         self.reg_covar = reg_covar
         self.max_iter = max_iter
         self.random_state = random_state
-        self.verbose = verbose
 
     def _init_params(self, X):
         loc_ = (
@@ -162,7 +163,21 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         return _m_step(X, resp, E_gamma, scale_, scale_cholesky_, df_, reg_covar)
 
     def fit(self, X, y=None):
-        """"""
+        """Estimate model parameters with the EM algorithm.
+
+        Parameters
+        ----------
+        X: array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row corresponds to a single data point.
+
+        y: Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        self: StudentsTMixture
+            The fitted mixture.
+        """
         self.df_ = np.full((self.n_components), self.df, dtype=np.float64)
         loc_, scale_, mix_weights_, scale_cholesky_ = self._init_params(X)
         lower_bound = -np.inf
@@ -206,9 +221,6 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
             if abs(change) < self.tol:
                 break
             lower_bound = current_bound
-            if self.verbose:
-                print(f"Change in lower bound: {change}")
-                print(f"Actual lower bound: {current_bound}")
         else:
             self.converged_ = False
             warnings.warn(
@@ -222,6 +234,19 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         return self
 
     def predict_proba(self, X):
+        """Evaluate the components' density for each sample.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row
+            corresponds to a single data point.
+
+        Returns
+        -------
+        resp : array, shape (n_samples, n_components)
+            Density of each Student's T component for each sample in X.
+        """
         sq_maha_dist = sq_maha_distance(X, self.means_, self.scale_cholesky_)
         loglik = get_loglikelihood(
             X, sq_maha_dist, self.df_, self.scale_cholesky_, self.weights_
@@ -232,9 +257,38 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         return np.exp(loglik)
 
     def predict(self, X):
+        """Predict the labels for the data samples in X using trained model.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row
+            corresponds to a single data point.
+
+        Returns
+        -------
+        labels : array, shape (n_samples,)
+            Component labels.
+        """
         return np.argmax(self.predict_proba(X), axis=1)
 
     def fit_predict(self, X):
+        """Estimate model parameters using X and predict the labels for X.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row
+            corresponds to a single data point.
+
+        y : Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        labels : array, shape (n_samples,)
+            Component labels.
+        """
         return self.fit(X).predict(X)
 
     def aic(self, X):
@@ -286,9 +340,47 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
     def score(self, X):
         return np.mean(self.score_samples(X))
 
-    def sample(self, num_samples: int = 1):
-        rng = np.random.default_rng(self.random_state)
-        labels = rng.multinomial(1, self.weights_, size=num_samples)
-        X_gen = []
-        for label in labels:
-            pass
+
+class CauchyMixture(StudentsTMixture):
+    """Cauchy Mixture Model.
+    This class allows you to estimate a multivariate mixture of Cauchys over your data.
+
+    Parameters
+    ----------
+    n_components: int
+        The number of mixture components.
+    tol: float, default=1e-5
+        The convergence threshold. EM iterations will stop when the lower bound average gain is below this threshold.
+    reg_covar: float, default=1e-6
+        Non-negative regularization added to the diagonal of covariance. Allows to assure that the covariance matrices are all positive.
+    max_iter: int, default=1000
+        The number of EM iterations to perform.
+
+    Attributes
+    ----------
+    weights_: array-like of shape (n_components,)
+        The weights of each mixture components.
+    means_: array-like of shape (n_components, n_features)
+        The mean of each mixture component.
+    n_iter_: int
+        Number of step used by the best fit of EM to reach the convergence.
+    converged_: bool
+        True when convergence of the best fit of EM was reached, False otherwise.
+    """
+
+    def __init__(
+        self,
+        n_components: int,
+        tol: float = 1e-5,
+        reg_covar: float = 1e-06,
+        max_iter: int = 1000,
+        random_state=None,
+    ):
+        super().__init__(
+            n_components=n_components,
+            tol=tol,
+            reg_covar=reg_covar,
+            max_iter=max_iter,
+            random_state=random_state,
+            df=1.0,
+        )
