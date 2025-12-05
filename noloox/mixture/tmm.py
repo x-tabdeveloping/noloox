@@ -1,76 +1,88 @@
 """Implementation inspired by https://github.com/jlparkI/mix_T/blob/main/src/studenttmixture/em_student_mixture.py"""
 
 import warnings
+from functools import partial
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from scipy.linalg import solve_triangular
-from scipy.special import gammaln, logsumexp
+from jax.scipy.linalg import solve_triangular
+from jax.scipy.special import gammaln, logsumexp
 from sklearn.base import BaseEstimator, ClusterMixin, DensityMixin
 from sklearn.cluster import KMeans
+from tqdm import trange
+
+EPS = np.finfo(float).eps
+
+
+def _maha_dist(scale_cholesky_, loc_, X):
+    diff = X - loc_[None, :]
+    diff = solve_triangular(scale_cholesky_, diff.T, lower=True)
+    return (diff**2).sum(axis=0)
 
 
 def sq_maha_distance(X, loc_, scale_cholesky_):
-    sq_maha_dist = np.empty((X.shape[0], loc_.shape[0]))
-    for i in range(loc_.shape[0]):
-        diff = X - loc_[None, i, :]
-        diff = solve_triangular(scale_cholesky_[:, :, i], diff.T, lower=True)
-        sq_maha_dist[:, i] = (diff**2).sum(axis=0)
-    return sq_maha_dist
+    sc = jnp.transpose(scale_cholesky_, (-1, 0, 1))
+    v_f = jax.vmap(partial(_maha_dist, X=X), in_axes=(0, 0), out_axes=0)
+    return v_f(sc, loc_).T
+
+
+def _scale_update(ru, loc_, resp_sum, reg_covar, X):
+    diff = X - loc_[None, :]
+    scale = jnp.dot(ru * diff.T, diff) / (resp_sum + 10 * EPS)
+    scale = scale + reg_covar * jnp.eye(scale.shape[0])
+    return scale
 
 
 def scale_update_calcs(X, ru, loc_, resp_sum, reg_covar):
     """Updates the scale (aka covariance) matrices as part of the M-
     step for EM and as the parameter update for variational methods."""
-    scale_ = np.empty((loc_.shape[1], loc_.shape[1], loc_.shape[0]))
-    scale_cholesky_ = np.empty((loc_.shape[1], loc_.shape[1], loc_.shape[0]))
-    for i in range(loc_.shape[0]):
-        diff = X - loc_[i : i + 1, :]
-        scale_[:, :, i] = np.dot(ru[:, i] * diff.T, diff) / (
-            resp_sum[i] + 10 * np.finfo(scale_.dtype).eps
-        )
-        scale_[:, :, i].flat[:: scale_.shape[0] + 1] += reg_covar
-        scale_cholesky_[:, :, i] = np.linalg.cholesky(scale_[:, :, i])
-    return scale_, scale_cholesky_
+    ru = ru.T
+    v_f = jax.vmap(
+        partial(_scale_update, reg_covar=reg_covar, X=X),
+        in_axes=(0, 0, 0),
+        out_axes=(0),
+    )
+    scale = v_f(ru, loc_, resp_sum)
+    scale_cholesky = jax.vmap(jnp.linalg.cholesky, 0, 0)(scale)
+    return scale.transpose(1, 2, 0), scale_cholesky.transpose(1, 2, 0)
 
 
 def logdet(a):
-    return np.sum(np.log(np.diag(a)))
+    return jnp.sum(jnp.log(jnp.diag(a)))
 
 
 def get_loglikelihood(X, sq_maha_dist, df_, scale_cholesky_, mix_weights_):
-    sq_maha_dist = 1 + sq_maha_dist / df_[np.newaxis, :]
-    sq_maha_dist = -0.5 * (df_[np.newaxis, :] + X.shape[1]) * np.log(sq_maha_dist)
+    sq_maha_dist = 1 + sq_maha_dist / df_[jnp.newaxis, :]
+    sq_maha_dist = -0.5 * (df_[jnp.newaxis, :] + X.shape[1]) * jnp.log(sq_maha_dist)
     const_term = gammaln(0.5 * (df_ + X.shape[1])) - gammaln(0.5 * df_)
-    const_term = const_term - 0.5 * X.shape[1] * (np.log(df_) + np.log(np.pi))
-    scale_logdet = [
-        logdet(scale) for scale in np.transpose(scale_cholesky_, (-1, 0, 1))
-    ]
-    scale_logdet = np.asarray(scale_logdet)
-    return -scale_logdet[np.newaxis, :] + const_term[np.newaxis, :] + sq_maha_dist
+    const_term = const_term - 0.5 * X.shape[1] * (jnp.log(df_) + jnp.log(jnp.pi))
+    scale_logdet = jax.vmap(logdet, 0, 0)(jnp.transpose(scale_cholesky_, (-1, 0, 1)))
+    return -scale_logdet[jnp.newaxis, :] + const_term[jnp.newaxis, :] + sq_maha_dist
 
 
-def e_step(X, df_, loc_, scale_cholesky_, mix_weights_, sq_maha_dist):
+def _e_step(X, df_, loc_, scale_cholesky_, mix_weights_, sq_maha_dist):
     sq_maha_dist = sq_maha_distance(X, loc_, scale_cholesky_)
     loglik = get_loglikelihood(X, sq_maha_dist, df_, scale_cholesky_, mix_weights_)
     weighted_log_prob = (
-        loglik + np.log(np.clip(mix_weights_, a_min=1e-12, a_max=None))[np.newaxis, :]
+        loglik
+        + jnp.log(jnp.clip(mix_weights_, a_min=1e-12, a_max=None))[jnp.newaxis, :]
     )
     log_prob_norm = logsumexp(weighted_log_prob, axis=1)
-    with np.errstate(under="ignore"):
-        resp = np.exp(weighted_log_prob - log_prob_norm[:, np.newaxis])
-    E_gamma = (df_[np.newaxis, :] + X.shape[1]) / (df_[np.newaxis, :] + sq_maha_dist)
-    lower_bound = np.mean(log_prob_norm)
+    resp = jnp.exp(weighted_log_prob - log_prob_norm[:, jnp.newaxis])
+    E_gamma = (df_[jnp.newaxis, :] + X.shape[1]) / (df_[jnp.newaxis, :] + sq_maha_dist)
+    lower_bound = jnp.mean(log_prob_norm)
     return resp, E_gamma, lower_bound
 
 
-def m_step(X, resp, E_gamma, scale_, scale_cholesky_, df_, reg_covar):
-    mix_weights_ = np.mean(resp, axis=0)
+def _m_step(X, resp, E_gamma, scale_, scale_cholesky_, df_, reg_covar):
+    mix_weights_ = jnp.mean(resp, axis=0)
     ru = resp * E_gamma
-    loc_ = np.dot(ru.T, X)
-    resp_sum = np.sum(ru, axis=0) + 10 * np.finfo(resp.dtype).eps
-    loc_ = loc_ / resp_sum[:, np.newaxis]
+    loc_ = jnp.dot(ru.T, X)
+    resp_sum = jnp.sum(ru, axis=0) + 10 * EPS
+    loc_ = loc_ / resp_sum[:, jnp.newaxis]
     scale_, scale_cholesky_ = scale_update_calcs(X, ru, loc_, resp_sum, reg_covar)
-    return mix_weights_, loc_, scale_, scale_cholesky_, df_
+    return mix_weights_, loc_, scale_, scale_cholesky_
 
 
 class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
@@ -141,6 +153,14 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         scale_cholesky_ = np.stack(scale_cholesky_, axis=-1)
         return loc_, scale_, mix_weights_, scale_cholesky_
 
+    @staticmethod
+    def e_step(X, df_, loc_, scale_cholesky_, mix_weights_, sq_maha_dist):
+        return _e_step(X, df_, loc_, scale_cholesky_, mix_weights_, sq_maha_dist)
+
+    @staticmethod
+    def m_step(X, resp, E_gamma, scale_, scale_cholesky_, df_, reg_covar):
+        return _m_step(X, resp, E_gamma, scale_, scale_cholesky_, df_, reg_covar)
+
     def fit(self, X, y=None):
         """"""
         self.df_ = np.full((self.n_components), self.df, dtype=np.float64)
@@ -148,19 +168,39 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         lower_bound = -np.inf
         sq_maha_dist = np.empty((X.shape[0], self.n_components))
         self.converged_ = True
-        for iter in range(self.max_iter):
-            resp, E_gamma, current_bound = e_step(
+
+        @jax.jit
+        def step(loc_, mix_weights_, scale_cholesky_, scale_, sq_maha_dist):
+            resp, E_gamma, current_bound = self.e_step(
                 X, self.df_, loc_, scale_cholesky_, mix_weights_, sq_maha_dist
             )
-
-            mix_weights_, loc_, scale_, scale_cholesky_, df_ = m_step(
+            mix_weights_, loc_, scale_, scale_cholesky_ = self.m_step(
                 X,
                 resp,
                 E_gamma,
                 scale_,
                 scale_cholesky_,
                 self.df_,
-                reg_covar=self.reg_covar,
+                self.reg_covar,
+            )
+            return (
+                loc_,
+                mix_weights_,
+                scale_cholesky_,
+                scale_,
+                sq_maha_dist,
+                current_bound,
+            )
+
+        for iter in trange(self.max_iter, desc="Running EM"):
+            loc_, mix_weights_, scale_cholesky_, scale_, sq_maha_dist, current_bound = (
+                step(
+                    loc_,
+                    mix_weights_,
+                    scale_cholesky_,
+                    scale_,
+                    sq_maha_dist,
+                )
             )
             change = current_bound - lower_bound
             if abs(change) < self.tol:
