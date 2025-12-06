@@ -1,431 +1,139 @@
-"""Module containing tools for fitting a Dirichlet Multinomial Mixture Model."""
+from functools import partial
 
-from __future__ import annotations
-
-from math import exp, log
-
+import jax
+import jax.numpy as jnp
 import numpy as np
+from jax.scipy.special import softmax
+from tqdm import trange
 
 
-def sample_categorical(pvals: np.ndarray) -> int:
-    """Samples from a categorical distribution given its parameters.
-
-    Parameters
-    ----------
-    pvals: array of shape (n_clusters, )
-        Parameters of the categorical distribution.
-
-    Returns
-    -------
-    int
-        Sample.
-    """
-    cum_prob = 0
-    u = np.random.uniform(0.0, 1.0)
-    for i in range(len(pvals)):
-        cum_prob += pvals[i]
-        if u < cum_prob:
-            return i
-    else:
-        # This shouldn't ever happen, but floating point errors can
-        # cause such behaviour ever so often.
-        return 0
+def _numerator_term(dt, n, beta):
+    return jax.lax.fori_loop(0, dt, lambda j, carry: carry + jnp.log(j + beta + n), 0)
 
 
-def norm_prob(prob: np.ndarray) -> None:
-    """Normalizes probabilities in place.
-
-    Parameters
-    ----------
-    prob: ndarray
-        Improper probability distribution.
-    """
-    (n,) = prob.shape
-    total = np.sum(prob)
-    if total == 0:
-        prob[:] = 1 / n
-        return
-    for i in range(n):
-        prob[i] = prob[i] / total
-
-
-def _remove_add_doc(
-    i_doc: int,
-    i_cluster: int,
-    remove: bool,
-    cluster_word_distribution: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_doc_count: np.ndarray,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    max_unique_words: int,
-) -> None:
-    if remove:
-        cluster_doc_count[i_cluster] -= 1
-    else:
-        cluster_doc_count[i_cluster] += 1
-    for i_unique in range(max_unique_words):
-        i_word = doc_unique_words[i_doc, i_unique]
-        count = doc_unique_word_counts[i_doc, i_unique]
-        if not count:
-            # Break out when the word is not present in the document
-            break
-        if remove:
-            cluster_word_count[i_cluster] -= count
-            cluster_word_distribution[i_cluster, i_word] -= count
-        else:
-            cluster_word_count[i_cluster] += count
-            cluster_word_distribution[i_cluster, i_word] += count
-
-
-def remove_doc(
-    i_doc: int,
-    i_cluster: int,
-    cluster_word_distribution: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_doc_count: np.ndarray,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    max_unique_words: int,
-) -> None:
-    return _remove_add_doc(
-        i_doc,
-        i_cluster,
-        remove=True,
-        cluster_word_distribution=cluster_word_distribution,
-        cluster_word_count=cluster_word_count,
-        cluster_doc_count=cluster_doc_count,
-        doc_unique_words=doc_unique_words,
-        doc_unique_word_counts=doc_unique_word_counts,
-        max_unique_words=max_unique_words,
+def _cond_prob(m, n_w, n, doc_term, Nd, D, K, V, alpha, beta):
+    log_norm_term = jnp.log(
+        (m + alpha) / (D - 1 + K * alpha),
     )
-
-
-def add_doc(
-    i_doc: int,
-    i_cluster: int,
-    cluster_word_distribution: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_doc_count: np.ndarray,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    max_unique_words: int,
-) -> None:
-    return _remove_add_doc(
-        i_doc,
-        i_cluster,
-        remove=False,
-        cluster_word_distribution=cluster_word_distribution,
-        cluster_word_count=cluster_word_count,
-        cluster_doc_count=cluster_doc_count,
-        doc_unique_words=doc_unique_words,
-        doc_unique_word_counts=doc_unique_word_counts,
-        max_unique_words=max_unique_words,
+    log_numerator = jnp.sum(
+        jax.vmap(partial(_numerator_term, beta=beta), (0, 0), 0)(doc_term, n_w)
     )
-
-
-def init_clusters(
-    cluster_word_distribution: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_doc_count: np.ndarray,
-    doc_clusters: np.ndarray,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    max_unique_words: int,
-) -> None:
-    """Randomly initializes clusters in the model.
-
-    Parameters
-    ----------
-    cluster_word_count(OUT): array of shape (n_clusters,)
-        Contains the amount of words there are in each cluster.
-    cluster_word_distribution(OUT): matrix of shape (n_clusters, n_vocab)
-        Contains the amount a word occurs in a certain cluster.
-    cluster_doc_count(OUT): array of shape (n_clusters,)
-        Array containing how many documents there are in each cluster.
-    doc_clusters: array of shape (n_docs)
-        Contains a cluster label for each document, that has
-        to be assigned.
-    doc_unique_words: matrix of shape (n_documents, MAX_UNIQUE_WORDS)
-        Matrix containing all indices of unique words in the document.
-    doc_unique_word_counts: matrix of shape (n_documents, MAX_UNIQUE_WORDS)
-        Matrix containing all counts for each unique word in the document.
-    max_unique_words: int
-        Maximum number of unique words in any document.
-
-    NOTE
-    ----
-    Beware that the function modifies a numpy array, that's passed in as
-    an input parameter. Should not be used in parallel, as race conditions
-    might arise.
-    """
-    n_docs, _ = doc_unique_words.shape
-    for i_doc in range(n_docs):
-        i_cluster = doc_clusters[i_doc]
-        add_doc(
-            i_doc=i_doc,
-            i_cluster=i_cluster,
-            cluster_word_distribution=cluster_word_distribution,
-            cluster_word_count=cluster_word_count,
-            cluster_doc_count=cluster_doc_count,
-            doc_unique_words=doc_unique_words,
-            doc_unique_word_counts=doc_unique_word_counts,
-            max_unique_words=max_unique_words,
-        )
-
-
-def _cond_prob(
-    i_cluster: int,
-    i_document: int,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    n_words: int,
-    alpha: float,
-    beta: float,
-    n_clusters: int,
-    n_vocab: int,
-    n_docs: int,
-    cluster_doc_count: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_word_distribution: np.ndarray,
-    max_unique_words: int,
-) -> float:
-    """Computes the conditional probability of a certain document joining the
-    given mixture component.
-
-    Implements formula no. 4 from Yin & Wang (2014).
-
-    Parameters
-    ----------
-    i_cluster: int
-        The label of the cluster.
-    i_document: int
-        Index of the document in the corpus.
-    doc_unique_words: matrix of shape (n_documents, MAX_UNIQUE_WORDS)
-        Matrix containing all indices of unique words in the document.
-    doc_unique_word_counts: matrix of shape (n_documents, MAX_UNIQUE_WORDS)
-        Matrix containing all counts for each unique word in the document.
-    n_words: int
-        Total number of words in the document.
-    alpha: float
-        Alpha parameter of the model.
-    beta: float
-        Beta parameter of the model.
-    n_clusters: int
-        Number of mixture components in the model.
-    n_vocab: int
-        Number of total vocabulary items.
-    n_docs: int
-        Total number of documents.
-    cluster_doc_count: array of shape (n_clusters,)
-        Array containing how many documents there are in each cluster.
-    cluster_word_count: array of shape (n_clusters,)
-        Contains the amount of words there are in each cluster.
-    cluster_word_distribution: matrix of shape (n_clusters, n_vocab)
-        Contains the amount a word occurs in a certain cluster.
-    max_unique_words: int
-        Maximum number of unique words seen in a document.
-    """
-    # I broke the formula into different pieces so that it's easier to write
-    # I could not find a better way to organize it, as I'm not in total command of
-    # the algebra going on here :))
-    # I use logs instead of computing the products directly,
-    # as it would quickly result in numerical overflow.
-    log_norm_term = log(
-        (cluster_doc_count[i_cluster] + alpha) / (n_docs - 1 + n_clusters * alpha),
+    log_denominator = jax.lax.fori_loop(
+        0, Nd, lambda j, carry: carry + jnp.log(n + V * beta + j - 1), 0
     )
-    log_numerator = 0
-    for i_unique in range(max_unique_words):
-        i_word = doc_unique_words[i_document, i_unique]
-        count = doc_unique_word_counts[i_document, i_unique]
-        if not count:
-            # Breaking out at the first word that doesn't occur in the document
-            break
-        for j in range(count):
-            log_numerator += log(
-                cluster_word_distribution[i_cluster, i_word] + beta + j,
-            )
-    log_denominator = 0
-    subres = cluster_word_count[i_cluster] + (n_vocab * beta)
-    for j in range(n_words):
-        log_denominator += log(subres + j)
-    res = exp(log_norm_term + log_numerator - log_denominator)
-    return res
+    return log_norm_term + log_numerator - log_denominator
 
 
-def predict_doc(
-    probabilities: np.ndarray,
-    i_document: int,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    n_words: int,
-    alpha: float,
-    beta: float,
-    n_clusters: int,
-    n_vocab: int,
-    n_docs: int,
-    cluster_doc_count: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_word_distribution: np.ndarray,
-    max_unique_words: int,
-) -> None:
-    """Computes the parameters of the multinomial distribution used for
-    sampling.
+def log_cond_prob(m_z, n_z_w, n_z, doc_term, D, K, V, alpha, beta):
+    Nd = jnp.sum(doc_term)
+    return jax.vmap(
+        partial(
+            _cond_prob, doc_term=doc_term, Nd=Nd, D=D, K=K, V=V, alpha=alpha, beta=beta
+        ),
+        (0, 0, 0),
+        0,
+    )(m_z, n_z_w, n_z)
 
-    Parameters
-    ----------
-    probabilities(OUT): array of shape (n_clusters, )
-        Parameters of the categorical distribution.
-    i_document: int
-        Index of the document in the corpus.
-    doc_unique_words: matrix of shape (n_documents, MAX_UNIQUE_WORDS)
-        Matrix containing all indices of unique words in the document.
-    doc_unique_word_counts: matrix of shape (n_documents, MAX_UNIQUE_WORDS)
-        Matrix containing all counts for each unique word in the document.
-    n_words: int
-        Total number of words in the document.
-    alpha: float
-        Alpha parameter of the model.
-    beta: float
-        Beta parameter of the model.
-    n_clusters: int
-        Number of mixture components in the model.
-    n_vocab: int
-        Number of total vocabulary items.
-    n_docs: int
-        Total number of documents.
-    cluster_doc_count: array of shape (n_clusters,)
-        Array containing how many documents there are in each cluster.
-    cluster_word_count: array of shape (n_clusters,)
-        Contains the amount of words there are in each cluster.
-    cluster_word_distribution: matrix of shape (n_clusters, n_vocab)
-        Contains the amount a word occurs in a certain cluster.
-    max_unique_words: int
-        Maximum number of unique words seen in a document.
 
-    NOTE
-    ----
-    Beware that the function modifies a numpy array, that's passed in as
-    an input parameter. Should not be used in parallel, as race conditions
-    might arise.
-    """
-    # NOTE: we modify the original array here instead of returning a new
-    # one, as allocating new arrays in such a nested loop is very inefficient.
-    # Obtain all conditional probabilities
-    for i_cluster in range(n_clusters):
-        probabilities[i_cluster] = _cond_prob(
-            i_cluster=i_cluster,
-            i_document=i_document,
-            doc_unique_words=doc_unique_words,
-            doc_unique_word_counts=doc_unique_word_counts,
-            n_words=n_words,
+def _doc_step(random_key, components, m_z, n_z, doc_term, doc_z, D, K, V, alpha, beta):
+    S = doc_term.sum()
+    # Removing document from previous cluster
+    components = components.at[doc_z].subtract(doc_term)
+    m_z = m_z.at[doc_z].subtract(1)
+    n_z = n_z.at[doc_z].subtract(S)
+    # Getting new prediction for the document at hand
+    log_p = log_cond_prob(m_z, components, n_z, doc_term, D, K, V, alpha, beta)
+    random_key, subkey = jax.random.split(random_key)
+    z = jnp.argmax(jax.random.multinomial(subkey, n=1, p=softmax(log_p)))
+    # Adding document back to the newly chosen cluster
+    components = components.at[z].add(doc_term)
+    m_z = m_z.at[z].add(1)
+    n_z = n_z.at[z].add(S)
+    return (random_key, components, m_z, n_z), z
+
+
+def _step(
+    components, random_key, doc_zs, m_z, n_z, doc_term_matrix, D, K, V, alpha, beta
+):
+    def doc_step(carry, xs):
+        random_key, components, m_z, n_z = carry
+        z, doc_term = xs
+        return _doc_step(
+            random_key,
+            components,
+            m_z,
+            n_z,
+            doc_term,
+            doc_z=z,
+            D=D,
+            K=K,
+            V=V,
             alpha=alpha,
             beta=beta,
-            n_clusters=n_clusters,
-            n_vocab=n_vocab,
-            n_docs=n_docs,
-            cluster_doc_count=cluster_doc_count,
-            cluster_word_count=cluster_word_count,
-            cluster_word_distribution=cluster_word_distribution,
-            max_unique_words=max_unique_words,
         )
-    # Normalize probability vector
-    norm_prob(probabilities)
+
+    (random_key, components, m_z, n_z), zs = jax.lax.scan(
+        doc_step, init=(random_key, components, m_z, n_z), xs=(doc_zs, doc_term_matrix)
+    )
+    return random_key, components, zs, m_z, n_z
 
 
-def _sampling_step(
-    alpha: float,
-    beta: float,
-    n_clusters: int,
-    n_vocab: int,
-    n_docs: int,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    doc_clusters: np.ndarray,
-    cluster_doc_count: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_word_distribution: np.ndarray,
-    max_unique_words: int,
-    prediction: np.ndarray,
-    doc_word_count: np.ndarray,
+def init_model(
+    n_components: int,
+    doc_term_matrix,
+    random_key,
 ) -> None:
-    for i_doc in range(n_docs):
-        # Removing document from previous cluster
-        prev_cluster = doc_clusters[i_doc]
-        # Removing document from the previous cluster
-        remove_doc(
-            i_doc,
-            prev_cluster,
-            cluster_word_distribution=cluster_word_distribution,
-            cluster_word_count=cluster_word_count,
-            cluster_doc_count=cluster_doc_count,
-            doc_unique_words=doc_unique_words,
-            doc_unique_word_counts=doc_unique_word_counts,
-            max_unique_words=max_unique_words,
-        )
-        # Getting new prediction for the document at hand
-        predict_doc(
-            probabilities=prediction,
-            i_document=i_doc,
-            doc_unique_words=doc_unique_words,
-            doc_unique_word_counts=doc_unique_word_counts,
-            n_words=doc_word_count[i_doc],
-            alpha=alpha,
-            beta=beta,
-            n_clusters=n_clusters,
-            n_vocab=n_vocab,
-            n_docs=n_docs,
-            cluster_doc_count=cluster_doc_count,
-            cluster_word_count=cluster_word_count,
-            cluster_word_distribution=cluster_word_distribution,
-            max_unique_words=max_unique_words,
-        )
-        new_cluster = sample_categorical(prediction)
-        # Adding document back to the newly chosen cluster
-        doc_clusters[i_doc] = new_cluster
-        add_doc(
-            i_doc,
-            new_cluster,
-            cluster_word_distribution=cluster_word_distribution,
-            cluster_word_count=cluster_word_count,
-            cluster_doc_count=cluster_doc_count,
-            doc_unique_words=doc_unique_words,
-            doc_unique_word_counts=doc_unique_word_counts,
-            max_unique_words=max_unique_words,
-        )
+    """Randomly initializes clusters in the model."""
+    D, V = doc_term_matrix.shape
+    m_z = np.zeros(n_components)
+    n_z = np.zeros(n_components)
+    components = np.zeros((n_components, V))
+    random_key, subkey = jax.random.split(random_key)
+    zs = jnp.argmax(
+        jax.random.multinomial(
+            subkey, n=1, p=np.ones(n_components) / n_components, shape=(D, n_components)
+        ),
+        axis=1,
+    )
+    for z, doc_term in zip(zs, doc_term_matrix):
+        m_z[z] += 1
+        n_z[z] += doc_term.sum()
+        components[z] += np.ravel(np.asarray(doc_term))
+    return random_key, components, zs, m_z, n_z
 
 
 def fit_model(
-    n_iter: int,
-    alpha: float,
-    beta: float,
-    n_clusters: int,
-    n_vocab: int,
-    n_docs: int,
-    doc_unique_words: np.ndarray,
-    doc_unique_word_counts: np.ndarray,
-    doc_clusters: np.ndarray,
-    cluster_doc_count: np.ndarray,
-    cluster_word_count: np.ndarray,
-    cluster_word_distribution: np.ndarray,
-    max_unique_words: int,
-) -> None:
-    doc_word_count = np.sum(doc_unique_word_counts, axis=1)
-    prediction = np.empty(n_clusters)
-    for _ in range(n_iter):
-        _sampling_step(
-            alpha=alpha,
-            beta=beta,
-            n_clusters=n_clusters,
-            n_vocab=n_vocab,
-            n_docs=n_docs,
-            doc_unique_words=doc_unique_words,
-            doc_unique_word_counts=doc_unique_word_counts,
-            doc_clusters=doc_clusters,
-            cluster_doc_count=cluster_doc_count,
-            cluster_word_count=cluster_word_count,
-            cluster_word_distribution=cluster_word_distribution,
-            max_unique_words=max_unique_words,
-            doc_word_count=doc_word_count,
-            prediction=prediction,
+    random_key,
+    n_components,
+    n_iter,
+    alpha,
+    beta,
+    doc_term_matrix,
+):
+    D, V = doc_term_matrix.shape
+    K = n_components
+    random_key, components, zs, m_z, n_z = init_model(
+        n_components, doc_term_matrix, random_key
+    )
+
+    @jax.jit
+    def step(random_key, components, zs, m_z, n_z):
+        return _step(
+            components,
+            random_key,
+            zs,
+            m_z,
+            n_z,
+            doc_term_matrix,
+            D,
+            K,
+            V,
+            alpha,
+            beta,
         )
+
+    for _ in trange(n_iter, desc="Sampling from posterior"):
+        random_key, components, zs, m_z, n_z = step(
+            random_key, components, zs, m_z, n_z
+        )
+    return random_key, components, zs, m_z, n_z
