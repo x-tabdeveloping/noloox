@@ -330,6 +330,19 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         return n_params * np.log(x.shape[0]) - 2 * score * x.shape[0]
 
     def score_samples(self, X):
+        """Compute the log-likelihood of each sample.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row
+            corresponds to a single data point.
+
+        Returns
+        -------
+        log_prob : array, shape (n_samples,)
+            Log-likelihood of each sample in `X` under the current model.
+        """
         sq_maha_dist = sq_maha_distance(X, self.means_, self.scale_cholesky_)
         loglik = get_loglikelihood(
             X, sq_maha_dist, self.df_, self.scale_cholesky_, self.weights_
@@ -337,13 +350,30 @@ class StudentsTMixture(BaseEstimator, ClusterMixin, DensityMixin):
         weighted_loglik = loglik + np.log(self.weights_)[np.newaxis, :]
         return logsumexp(weighted_loglik, axis=1)
 
-    def score(self, X):
+    def score(self, X, y=None):
+        """Compute the per-sample average log-likelihood of the given data X.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_dimensions)
+            List of n_features-dimensional data points. Each row
+            corresponds to a single data point.
+
+        y : Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        log_likelihood : float
+            Log-likelihood of `X` under the Gaussian mixture model.
+        """
         return np.mean(self.score_samples(X))
 
 
 class CauchyMixture(StudentsTMixture):
     """Cauchy Mixture Model.
     This class allows you to estimate a multivariate mixture of Cauchys over your data.
+    Equivalent to StudentsTMixture, except the degrees of freedom is fixed to 1.
 
     Parameters
     ----------

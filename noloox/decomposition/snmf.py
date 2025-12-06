@@ -60,6 +60,48 @@ def step(G, F, X, sparsity=0):
 
 
 class SNMF(TransformerMixin, BaseEstimator):
+    """Semi-Nonnegative Matrix Factorization.
+    Equivalent to NMF, except the components, and therefore the outcome variables are unbounded.
+    The latent factors are constrained to be nonnegative.
+
+    Example:
+    ```python
+    import numpy as np
+    from noloox.decomposition import SNMF
+
+    X = np.random.normal(0, 1, size=(200, 50))
+    model = SNMF(n_components=10)
+
+    X_transformed = model.fit_transform(X)
+    assert np.all(X_transformed >= 0)
+    ```
+
+    Parameters
+    ----------
+    n_components: int
+        Number of latent components to discover.
+    tol: float, default=1e-5
+        Tolerance for stopping condition.
+    max_iter: int, default=200
+        Maximum number of iterations.
+    progress_bar: bool, default=True
+        Indicates whether to display a progress bar when fitting.
+    random_state: int, default=None
+        Used for model intialization with KMeans.
+    sparsity: float, default=0.0
+        L1 penalty. Higher values result in a stricter clustering.
+
+    Attributes
+    ----------
+    components_: ndarray of shape (n_components, n_features)
+        Factorization matrix, sometimes called ‘dictionary’.
+        Unconstrained.
+    n_iter_: int
+        Acutal number of iterations.
+    reconstruction_err_: float
+        Reconstruction error of the model at the last iteration.
+    """
+
     def __init__(
         self,
         n_components: int,
@@ -78,7 +120,21 @@ class SNMF(TransformerMixin, BaseEstimator):
         self.sparsity = sparsity
         self.verbose = verbose
 
-    def fit_transform(self, X: np.ndarray, y=None):
+    def fit_transform(self, X, y=None):
+        """Learn an SNMF model for the data X and returns the transformed data.
+
+        Parameters
+        ----------
+        X: array-like of shape (n_samples, n_features)
+            Datapoints to factor.
+        y: Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        W : ndarray of shape (n_samples, n_components)
+            Transformed data. Strictily nonnegative.
+        """
         G = init_G(X.T, self.n_components, random_state=self.random_state)
         F = update_F(X.T, G)
         error_at_init = rec_err(X.T, F, G)
@@ -110,11 +166,37 @@ class SNMF(TransformerMixin, BaseEstimator):
         self.n_iter_ = i
         return np.array(G)
 
-    def fit_timeslice(self, X_t: np.ndarray, G_t: np.ndarray):
-        F = update_F(X_t.T, G_t)
-        return F.T
+    def fit(self, X, y=None):
+        """Learn an SNMF model for the data X.
 
-    def transform(self, X: np.ndarray):
+        Parameters
+        ----------
+        X: array-like of shape (n_samples, n_features)
+            Datapoints to factor.
+        y: Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        self: SNMF
+            Fitted model.
+        """
+        self.fit_transform(X, y)
+        return self
+
+    def transform(self, X):
+        """Transform the data X according to the fitted SNMF model.
+
+        Parameters
+        ----------
+        X: array-like of shape (n_samples, n_features)
+            Datapoints to transform.
+
+        Returns
+        -------
+        W: ndarray of shape (n_samples, n_components)
+            Nonnegative latent sources.
+        """
         G = jnp.maximum(X @ jnp.linalg.pinv(self.components_), 0)
         return np.array(G)
 

@@ -73,7 +73,22 @@ class Peax(ClusterMixin, BaseEstimator):
     def __init__(self, random_state: Optional[int] = None):
         self.random_state = random_state
 
-    def fit(self, X, y=None):
+    def fit_predict(self, X, y=None):
+        """Fit Peax clustering model and cluster datapoints.
+
+        Parameters
+        ----------
+        X: array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row corresponds to a single data point.
+
+        y: Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        labels: ndarray of shape (n_samples,)
+            Cluster labels for each datapoint.
+        """
         if X.shape[1] > 2:
             raise ValueError(
                 f"X has {X.shape[1]} > 2 features. Peax only accepts 2D data."
@@ -119,11 +134,44 @@ class Peax(ClusterMixin, BaseEstimator):
         self.weights_ = self.gmm_.weights_
         return self.labels_
 
+    def fit(self, X, y=None):
+        """Fits clustering model to data.
+
+        Parameters
+        ----------
+        X: array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row corresponds to a single data point.
+
+        y: Ignored
+            Not used, present for API consistency by convention.
+
+        Returns
+        -------
+        self: Peax
+            Fitted clustering model.
+        """
+        self.fit_predict(X, y)
+        return self
+
     @property
     def n_components(self) -> int:
+        """Number of clusters found in the data."""
         return self.gmm_.n_components
 
     def predict_proba(self, X):
+        """Evaluate the components' density for each sample.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row
+            corresponds to a single data point.
+
+        Returns
+        -------
+        resp : array, shape (n_samples, n_components)
+            Density of each Gaussian component for each sample in X.
+        """
         return self.gmm_.predict_proba(X)
 
     def score_samples(self, X):

@@ -1,260 +1,307 @@
-"""Implementation from https://github.com/einbandi/ptsne-pytorch/blob/master/ptsne/ptsne.py"""
+import os
 
+import jax
+import jax.numpy as jnp
+import keras.backend as K
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from scipy.optimize import root_scalar
-from scipy.sparse import csr_matrix
-from sklearn.decomposition import PCA
-from sklearn.neighbors import NearestNeighbors
-from tqdm import trange
+import sklearn
+import tensorflow as tf
+from keras.callbacks import TensorBoard
+from keras.layers import Dense, Dropout, InputLayer
+from keras.models import Sequential
+from keras.optimizers import Adam
+from sklearn.base import BaseEstimator, TransformerMixin
+from tqdm import tqdm
 
-EPS = np.finfo(float).eps
-LOG_2 = np.log(2)
-
-
-def entropy(d, beta):
-    x = -d * beta
-    y = np.exp(x)
-    ysum = y.sum()
-    if np.isclose(ysum, 0):
-        return -1.0
-    else:
-        factor = -1 / max((LOG_2 * ysum), EPS)
-        return factor * ((y * x) - (y * np.log(ysum))).sum()
+EPSILON = np.finfo(np.float32).eps
 
 
-def p_i(d, beta):
-    x = -d * beta
-    y = np.exp(x)
-    ysum = max(y.sum(), EPS)
-    return y / ysum
+def Hbeta(D, beta):
+    P = jnp.exp(-D * beta)
+    sumP = jnp.maximum(jnp.sum(P), EPSILON)
+    H = jnp.log(sumP) + beta * jnp.sum(D * P) / sumP
+    P = P / sumP
+    return H, P
 
 
-def find_beta(d, perp, upper_bound=1e6):
-    if np.isclose(d.sum(), 0):
-        return 0
-    return root_scalar(
-        lambda b: entropy(d, b) - np.log2(perp), bracket=(0.0, upper_bound)
-    ).root
+def x2p_job(data, max_iteration=50, tol=1e-5):
+    i, Di, logU = data
+    beta = 1.0
+    beta_min = -jnp.inf
+    beta_max = jnp.inf
+    H, thisP = Hbeta(Di, beta)
+    Hdiff = H - logU
 
+    def cond(state):
+        _, _, _, Hdiff, tries, _ = state
+        return jnp.logical_and(tries < max_iteration, jnp.abs(Hdiff) > tol)
 
-def p_ij_sym(x, perp, verbose=False, metric="euclidean"):
-    num_pts = x.shape[0]
-    k = min(num_pts - 1, int(3 * perp))
-    index = NearestNeighbors(n_neighbors=k, metric=metric).fit(x)
-    neighbors = np.empty((num_pts, k - 1), dtype=int)
-    p_ij = np.empty((num_pts, k - 1))
-    for i in trange(len(x), desc="Calculating betas"):
-        xi = x[i]
-        if verbose:
-            print(
-                "Calculating probabilities: {cur}/{tot}".format(cur=i + 1, tot=num_pts),
-                end="\r",
-            )
-        dists, nn = index.kneighbors([xi], k, return_distance=True)
-        beta = find_beta(dists[0, 1:], perp)
-        neighbors[i] = nn[0, 1:]
-        p_ij[i] = p_i(dists[0, 1:], beta)
-    row_indices = np.repeat(np.arange(num_pts), k - 1)
-    p = csr_matrix((p_ij.ravel(), (row_indices, neighbors.ravel())))
-    return 0.5 * (p + p.transpose())
+    def loop_body(state):
+        beta_min, beta_max, beta, Hdiff, tries, _ = state
+        beta_min, beta_max, beta = jax.lax.cond(
+            Hdiff > 0,
+            lambda: (
+                beta,
+                beta_max,
+                jax.lax.cond(
+                    jnp.isposinf(beta_max),
+                    lambda: beta * 2,
+                    lambda: (beta + beta_max) / 2.0,
+                ),
+            ),
+            lambda: (
+                beta_min,
+                beta,
+                jax.lax.cond(
+                    jnp.isneginf(beta_min),
+                    lambda: beta / 2,
+                    lambda: (beta + beta_min) / 2.0,
+                ),
+            ),
+        )
+        H, thisP = Hbeta(Di, beta)
+        return beta_min, beta_max, beta, H - logU, tries + 1, thisP
 
-
-def dist_mat_squared(x):
-    batch_size = x.shape[0]
-    expanded = x.unsqueeze(1)
-    tiled = torch.repeat_interleave(expanded, batch_size, dim=1)
-    diffs = tiled - tiled.transpose(0, 1)
-    sum_act = torch.sum(torch.pow(diffs, 2), axis=2)
-    return sum_act
-
-
-def norm_sym(x):
-    x.fill_diagonal_(0.0)
-    norm_facs = x.sum(axis=0, keepdim=True)
-    x = x / norm_facs
-    return 0.5 * (x + x.t())
-
-
-def q_ij(x, alpha):
-    dists = dist_mat_squared(x)
-    q = torch.pow((1 + dists / alpha), -(alpha + 1) / 2)
-    return norm_sym(q)
-
-
-def kullback_leibler_loss(p, q, eps=1.0e-7):
-    eps = torch.tensor(eps, dtype=p.dtype)
-    kl_matr = torch.mul(p, torch.log(p + eps) - torch.log(q + eps))
-    kl_matr.fill_diagonal_(0.0)
-    return torch.sum(kl_matr)
-
-
-def kullback_leibler_reverse_loss(p, q, eps=1.0e-7):
-    return kullback_leibler_loss(q, p, eps)
-
-
-def jensen_shannon_loss(p, q, eps=1.0e-7):
-    m = 0.5 * (p + q)
-    return 0.5 * kullback_leibler_loss(p, m, eps) + 0.5 * kullback_leibler_loss(
-        q, m, eps
+    state = (beta_min, beta_max, beta, Hdiff, 0, thisP)
+    beta_min, beta_max, beta, Hdiff, tries, thisP = jax.lax.while_loop(
+        cond, loop_body, init_val=state
     )
+    return i, thisP
 
 
-def frobenius_loss(p, q):
-    return torch.pow(p - q, 2).sum()
+def x2p(X, perplexity, n_jobs=None):
+    n = X.shape[0]
+    logU = np.log(perplexity)
+    sum_X = np.sum(np.square(X), axis=1)
+    D = sum_X + (sum_X.reshape((-1, 1)) - 2 * np.dot(X, X.T))
+    idx = (1 - np.eye(n)).astype(bool)
+    D = D[idx].reshape((n, -1))
+    P = np.zeros([n, n])
+    for i in range(n):
+        P[i, idx[i]] = x2p_job((i, D[i], logU))[1]
+    return P
 
 
-def total_variational_loss(p, q):
-    return torch.abs(p - q).sum()
+def write_log(callback, names, logs, batch_no):
+    for name, value in zip(names, logs):
+        summary = tf.Summary()
+        summary_value = summary.value.add()
+        summary_value.simple_value = value
+        summary_value.tag = name
+        callback.writer.add_summary(summary, batch_no)
+        callback.writer.flush()
 
 
-def submatrix(m, indices):
-    dim = len(indices)
-    indices = np.array(np.meshgrid(indices, indices)).T.reshape(-1, 2).T
-    return torch.tensor(m[indices[0], indices[1]].reshape(dim, dim))
+class ParametricTSNE(BaseEstimator, TransformerMixin):
 
-
-class _ParametricTSNE(nn.Module):
     def __init__(
         self,
-        input_dim,
-        output_dim,
-        perp,
-        alpha=1.0,
-        hidden_layer_dims=None,
-        seed=None,
-        use_cuda=False,
+        n_components=2,
+        perplexity=30.0,
+        n_iter=1000,
+        batch_size=500,
+        early_exaggeration_epochs=50,
+        early_exaggeration_value=4.0,
+        early_stopping_epochs=np.inf,
+        early_stopping_min_improvement=1e-2,
+        alpha=1,
+        nl1=1000,
+        nl2=500,
+        nl3=250,
+        logdir=None,
+        verbose=0,
     ):
-        super().__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.perplexity = perp
+
+        self.n_components = n_components
+        self.perplexity = perplexity
+        self.n_iter = n_iter
+        self.batch_size = batch_size
+        self.verbose = verbose
+
+        # FFNet architecture
+        self.nl1 = nl1
+        self.nl2 = nl2
+        self.nl3 = nl3
+
+        # Early-exaggeration
+        self.early_exaggeration_epochs = early_exaggeration_epochs
+        self.early_exaggeration_value = early_exaggeration_value
+        # Early-stopping
+        self.early_stopping_epochs = early_stopping_epochs
+        self.early_stopping_min_improvement = early_stopping_min_improvement
+
+        # t-Student params
         self.alpha = alpha
-        self.use_cuda = use_cuda
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-        # If no layers provided, use the same architecture as van der maaten 2009 paper
-        if hidden_layer_dims is None:
-            hidden_layer_dims = [500, 500, 2000]
-        self.layers = nn.ModuleList()
-        cur_dim = input_dim
-        for hdim in hidden_layer_dims:
-            self.layers.append(nn.Linear(cur_dim, hdim))
-            cur_dim = hdim
-        self.layers.append(nn.Linear(cur_dim, output_dim))
-        if self.alpha == "learn":
-            self.alpha = nn.Parameter(torch.tensor(1.0))
-        if self.use_cuda:
-            self.cuda()
 
-    def forward(self, x):
-        for layer in self.layers[:-1]:
-            # x = torch.sigmoid(layer(x))
-            x = F.softplus(layer(x))
-        out = self.layers[-1](x)
-        return out
+        # Tensorboard
+        self.logdir = logdir
 
-    def pretrain(
-        self,
-        training_data,
-        epochs=10,
-        verbose=False,
-        batch_size=500,
-        learning_rate=0.01,
-    ):
-        if type(training_data) is torch.Tensor:
-            pca = torch.tensor(
-                PCA(n_components=2).fit_transform(training_data.detach().cpu().numpy())
-            )
+        # Internals
+        self._model = None
+
+    def fit(self, X, y=None):
+        """fit the model with X"""
+
+        if self.batch_size is None:
+            self.batch_size = X.shape[0]
         else:
-            pca = torch.tensor(PCA(n_components=2).fit_transform(training_data))
-        dataset = torch.utils.data.TensorDataset(training_data, pca)
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, shuffle=True
-        )
-        optim = torch.optim.Adam(self.parameters(), lr=learning_rate)
-        criterion = nn.MSELoss()
-        for epoch in trange(epochs, desc="Pretraining epochs"):
-            running_loss = 0
-            for batch, data in enumerate(dataloader):
-                features, targets = data
-                if self.use_cuda:
-                    features = features.cuda()
-                    targets = targets.cuda()
-                optim.zero_grad()
-                loss = criterion(self(features), targets)
-                loss.backward()
-                optim.step()
-                running_loss += loss.item()
+            # HACK! REDUCE 'X' TO MAKE IT MULTIPLE OF BATCH_SIZE!
+            m = X.shape[0] % self.batch_size
+            if m > 0:
+                X = X[:-m]
 
-    def fit(
-        self,
-        training_data,
-        loss_func="kl",
-        p_ij=None,
-        pretrain=False,
-        epochs=10,
-        verbose=False,
-        optimizer=torch.optim.Adam,
-        batch_size=500,
-        learning_rate=0.01,
-        metric="euclidean",
-    ):
-        assert (
-            training_data.shape[1] == self.input_dim
-        ), "Input training data must be same shape as training `num_inputs`"
-        self.p_ij = p_ij
-        self._epochs = epochs
-        training_data = torch.tensor(training_data)
-        if pretrain:
-            self.pretrain(
-                training_data, epochs=5, verbose=verbose, batch_size=batch_size
+        n_sample, n_feature = X.shape
+
+        self._log("Building model..", end=" ")
+        self._build_model(n_feature, self.n_components)
+        self._log("Done")
+
+        self._log("Start training..")
+
+        # Tensorboard
+        if not self.logdir == None:
+            callback = TensorBoard(self.logdir)
+            callback.set_model(self._model)
+        else:
+            callback = None
+
+        # Early stopping
+        es_patience = self.early_stopping_epochs
+        es_loss = np.inf
+        es_stop = False
+
+        # Precompute P (once for all!)
+        P = self._calculate_P(X)
+
+        epoch = 0
+        while epoch < self.n_iter and not es_stop:
+
+            # Make copy
+            _P = P.copy()
+
+            ## Shuffle entries
+            # p_idxs = np.random.permutation(self.batch_size)
+
+            # Early exaggeration
+            if epoch < self.early_exaggeration_epochs:
+                _P *= self.early_exaggeration_value
+
+            # Actual training
+            loss = 0.0
+            n_batches = 0
+            for i in range(0, n_sample, self.batch_size):
+
+                batch_slice = slice(i, i + self.batch_size)
+                X_batch, _P_batch = X[batch_slice], _P[batch_slice]
+
+                # Shuffle entries
+                p_idxs = np.random.permutation(self.batch_size)
+                # Shuffle data
+                X_batch = X_batch[p_idxs]
+                # Shuffle rows and cols of P
+                _P_batch = _P_batch[p_idxs, :]
+                _P_batch = _P_batch[:, p_idxs]
+
+                loss += self._model.train_on_batch(X_batch, _P_batch)
+                n_batches += 1
+
+            # End-of-epoch: summarize
+            loss /= n_batches
+
+            if epoch % 10 == 0:
+                self._log("Epoch: {0} - Loss: {1:.3f}".format(epoch, loss))
+
+            if callback is not None:
+                # Write log
+                write_log(callback, ["loss"], [loss], epoch)
+
+            # Check early-stopping condition
+            if (
+                loss < es_loss
+                and np.abs(loss - es_loss) > self.early_stopping_min_improvement
+            ):
+                es_loss = loss
+                es_patience = self.early_stopping_epochs
+            else:
+                es_patience -= 1
+
+            if es_patience == 0:
+                self._log("Early stopping!")
+                es_stop = True
+
+            # Going to the next iteration...
+            del _P
+            epoch += 1
+
+        self._log("Done")
+
+        return self  # scikit-learn does so..
+
+    def transform(self, X):
+        """apply dimensionality reduction to X"""
+        # fit should have been called before
+        if self.model is None:
+            raise sklearn.exceptions.NotFittedError(
+                "This ParametricTSNE instance is not fitted yet. Call 'fit'"
+                " with appropriate arguments before using this method."
             )
-        if self.p_ij is None:
-            self.p_ij = p_ij_sym(
-                training_data.detach().cpu().numpy(),
-                self.perplexity,
-                verbose=verbose,
-                metric=metric,
-            ).toarray()
-        dataset = torch.utils.data.TensorDataset(
-            training_data, torch.arange(training_data.shape[0])
-        )
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, shuffle=True
-        )
-        optim = optimizer(self.parameters(), lr=learning_rate)
-        loss_func = {
-            "kl": kullback_leibler_loss,
-            "kl_rev": kullback_leibler_reverse_loss,
-            "js": jensen_shannon_loss,
-            "frob": frobenius_loss,
-            #'bat': bhattacharyya_loss,
-            "tot": total_variational_loss,
-        }[loss_func]
-        for epoch in trange(epochs, desc="Training epochs"):
-            running_loss = 0
-            for batch, data in enumerate(dataloader):
-                features, indices = data
-                p = submatrix(self.p_ij, indices.numpy())
-                p = p / p.sum()
-                if epoch < 10:
-                    # exaggeration test
-                    exaggeration = 10.0
-                    p *= exaggeration
-                if self.use_cuda:
-                    features = features.cuda()
-                    p = p.cuda()
-                optim.zero_grad()
-                q = q_ij(self(features), self.alpha)
-                q = q / q.sum()
-                loss = loss_func(p, q)
-                if epoch < 10:
-                    # exaggeration tets
-                    loss = loss / exaggeration - np.log(exaggeration)
-                loss.backward()
-                optim.step()
-                running_loss += loss.item()
+
+        self._log("Predicting embedding points..", end=" ")
+        X_new = self.model.predict(X, batch_size=X.shape[0])
+
+        self._log("Done")
+
+        return X_new
+
+    def fit_transform(self, X, y=None):
+        """fit the model with X and apply the dimensionality reduction on X."""
+        self.fit(X, y)
+
+        X_new = self.transform(X)
+        return X_new
+
+    # ================================ Internals ================================
+
+    def _calculate_P(self, X):
+        n = X.shape[0]
+        P = np.zeros([n, self.batch_size])
+        self._log("Computing P...")
+        for i in tqdm(np.arange(0, n, self.batch_size)):
+            P_batch = x2p(X[i : i + self.batch_size], self.perplexity)
+            P_batch[np.isnan(P_batch)] = 0
+            P_batch = P_batch + P_batch.T
+            P_batch = P_batch / P_batch.sum()
+            P_batch = np.maximum(P_batch, 1e-12)
+            P[i : i + self.batch_size] = P_batch
+        return P
+
+    def _kl_divergence(self, P, Y):
+        sum_Y = K.sum(K.square(Y), axis=1)
+        eps = K.variable(1e-15)
+        D = sum_Y + K.reshape(sum_Y, [-1, 1]) - 2 * K.dot(Y, K.transpose(Y))
+        Q = K.pow(1 + D / self.alpha, -(self.alpha + 1) / 2)
+        Q *= K.variable(1 - np.eye(self.batch_size))
+        Q /= K.sum(Q)
+        Q = K.maximum(Q, eps)
+        C = K.log((P + eps) / (Q + eps))
+        C = K.sum(P * C)
+
+        return C
+
+    def _build_model(self, n_input, n_output):
+        self._model = Sequential()
+        self._model.add(InputLayer((n_input,)))
+        # Layer adding loop
+        for n in [self.nl1, self.nl2, self.nl3]:
+            self._model.add(Dense(n, activation="relu"))
+        self._model.add(Dense(n_output, activation="linear"))
+        self._model.compile("adam", self._kl_divergence)
+
+    def _log(self, *args, **kwargs):
+        """logging with given arguments and keyword arguments"""
+        if self.verbose >= 1:
+            print(*args, **kwargs)
+
+    @property
+    def model(self):
+        return self._model

@@ -12,11 +12,10 @@ class WNMF(TransformerMixin, BaseEstimator):
     """
     Weighted Nonnegative Matrix Factorization (WNMF).
 
-    WNMF factorizes a nonnegative data matrix :math:`X` into two
-    nonnegative matrices :math:`W` and :math:`H` such that
+    WNMF factorizes a nonnegative data matrix $X$ into two
+    nonnegative matrices $W$ and $H$ such that
 
-    .. math::
-        X \\approx W H,
+    $X \\approx W H$
 
     but introduces per-entry weights given by `y`.
     The weights modify the update rules so that reconstruction errors on
@@ -76,7 +75,7 @@ class WNMF(TransformerMixin, BaseEstimator):
         Returns
         -------
         X_transformed : ndarray of shape (n_samples, n_components)
-            The learned encoding matrix :math:`V^T` of the data.
+            The learned encoding matrix $V^T$ of the data.
         """
         X_transformed, components = _initialize_nmf(
             X, self.n_components, random_state=self.random_state
