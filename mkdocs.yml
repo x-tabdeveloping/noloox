@@ -1,0 +1,71 @@
+site_name: noloox
+site_description: 'Unsupervised algorithms you will need one day.'
+repo_url: https://github.com/x-tabdeveloping/noloox
+nav:
+  - User Guide:
+    - Getting Started: index.md
+  - API Reference:
+    - noloox.cluster:
+      - Peax: Peax.md
+    - noloox.decomposition:
+      - SNMF: SNMF.md
+      - WNMF: WNMF.md
+    - noloox.mixture:
+      - StudentsTMixture: StudentsTMixture.md
+      - CauchyMixture: CauchyMixture.md
+      - DirichletMultinomialMixture: DirichletMultinomialMixture.md
+theme:
+  name: material
+  logo: images/logo.svg
+  font:
+    text: Merriweather
+  navigation_depth: 3
+  palette:
+    primary: teal
+  features:
+      - toc.integrate
+      - navigation.sections
+      - navigation.expand
+      - navigation.path
+      - navigation.indexes
+      - toc.follow
+      - content.code.copy
+
+plugins:
+- search
+- mkdocstrings:
+    handlers:
+      python:
+        options:
+          annotations_path: brief
+          show_root_heading: true
+          show_root_toc_entry: false
+          show_symbol_type_heading: true
+          docstring_style: numpy
+          heading_level: 3
+
+markdown_extensions:
+  - pymdownx.highlight:
+      use_pygments: true
+  - pymdownx.superfences
+  - attr_list
+  - md_in_html
+  - tables
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      toc_depth: 2
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
