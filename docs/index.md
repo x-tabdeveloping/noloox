@@ -1,7 +1,7 @@
 
-# noloox
+# 
 
-noloox is a Python library containing reference implementations of a bunch of very useful unsupervised learning algorithms that you probably won't find elsewhere.
+<img src="images/icon.png" width="75px"></img> is a Python library containing reference implementations of a bunch of very useful unsupervised learning algorithms that you probably won't find elsewhere.
 
 ### Our philosophy and goals
 

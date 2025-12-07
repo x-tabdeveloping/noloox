@@ -1,4 +1,4 @@
-site_name: noloox
+site_name: ''
 site_description: 'Unsupervised algorithms you will need one day.'
 repo_url: https://github.com/x-tabdeveloping/noloox
 nav:
@@ -16,12 +16,12 @@ nav:
       - DirichletMultinomialMixture: DirichletMultinomialMixture.md
 theme:
   name: material
-  logo: images/logo.svg
+  logo: images/icon.png
   font:
     text: Merriweather
   navigation_depth: 3
   palette:
-    primary: teal
+    primary: white
   features:
       - toc.integrate
       - navigation.sections
