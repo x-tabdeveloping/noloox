@@ -2,8 +2,13 @@ site_name: ''
 site_description: 'Unsupervised algorithms you will need one day.'
 repo_url: https://github.com/x-tabdeveloping/noloox
 nav:
-  - User Guide:
-    - Getting Started: index.md
+  - Getting Started: index.md
+  - Examples:
+    - Clustering survey responses: binary_clustering.md
+    - Clustering robust to outliers: robust_clustering.md
+    - Topic modelling for short texts: short_topic_modelling.md
+    - Find the number of clusters in the data: n_clusters.md
+    - Topic discovery by factoring transformer embeddings: senstopic.md
   - API Reference:
     - noloox.cluster:
       - Peax: Peax.md
