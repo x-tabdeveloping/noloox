@@ -4,9 +4,9 @@ repo_url: https://github.com/x-tabdeveloping/noloox
 nav:
   - Getting Started: index.md
   - Examples:
-    - Clustering survey responses: binary_clustering.md
-    - Clustering robust to outliers: robust_clustering.md
+    - Clustering count data: count_clustering.md
     - Topic modelling for short texts: short_topic_modelling.md
+    - Outlier-robust clustering: robust_clustering.md
     - Find the number of clusters in the data: n_clusters.md
     - Topic discovery by factoring transformer embeddings: senstopic.md
   - API Reference:
