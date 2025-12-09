@@ -1,6 +1,4 @@
 
-<img src="docs/images/icon.png" width="100px"></img>
-
 <img src="docs/images/icon.png" width="75px"></img> is a Python library containing reference implementations of a bunch of very useful unsupervised learning algorithms that you probably won't find elsewhere.
 
 #### What <img src="docs/images/icon.png" width="75px"></img> is:
