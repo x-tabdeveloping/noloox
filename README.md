@@ -1,15 +1,15 @@
 
-<img src="images/icon.png" width="100px"></img>
+<img src="docs/images/icon.png" width="100px"></img>
 
-<img src="images/icon.png" width="75px"></img> is a Python library containing reference implementations of a bunch of very useful unsupervised learning algorithms that you probably won't find elsewhere.
+<img src="docs/images/icon.png" width="75px"></img> is a Python library containing reference implementations of a bunch of very useful unsupervised learning algorithms that you probably won't find elsewhere.
 
-#### What <img src="images/icon.png" width="75px"></img> is:
+#### What <img src="docs/images/icon.png" width="75px"></img> is:
 
 - A collection of unsupervised machine learning algorithms
 - A scikit-learn compatible library
 - An educational resource containing worked examples and reference implementation
 
-#### What <img src="images/icon.png" width="75px"></img> isn't:
+#### What <img src="docs/images/icon.png" width="75px"></img> isn't:
 
 - The most feature-complete or efficient implementation of these algorithms
 - A replacement for scikit-learn
@@ -50,7 +50,7 @@ cluster_labels = model.fit_predict(X)
  - Library structure should match sklearn standards, and all algorithms should be drop-in replacements for scikit-learn equivalents.
  - Under these restrictions, algorithms should be as fast as humanly possible
 
-## The <img src="images/icon.png" width="90px"></img> wishlist:
+## The <img src="docs/images/icon.png" width="90px"></img> wishlist:
 
 There are a number of algorithms that would be nice to implement in the library.
 Contributions are very welcome.
