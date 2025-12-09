@@ -68,7 +68,7 @@ class WNMF(TransformerMixin, BaseEstimator):
         X : ndarray of shape (n_samples, n_features)
             Nonnegative data matrix to factorize.
 
-        y : ndarray of shape (n_samples,) or broadcastable to (n_samples, n_features)
+        y : ndarray of shape (n_samples,)
             Weights applied to each entry of `X`.
             Larger values increase the importance of corresponding entries.
 
@@ -82,7 +82,7 @@ class WNMF(TransformerMixin, BaseEstimator):
         )
         U = components.T
         V = X_transformed.T
-        weighted_A = X.T.multiply(y)  # .T
+        weighted_A = X.T * y  # .T
         prev_error = np.inf
         for i in range(0, self.max_iter):
             # Update V
@@ -109,6 +109,25 @@ class WNMF(TransformerMixin, BaseEstimator):
         self.components_ = U.T
         X_transformed = V.T
         return X_transformed
+
+    def fit(self, X, y=None):
+        """Fit the WNMF model to data `X` with weights `y`.
+        Parameters
+        ----------
+        X : ndarray of shape (n_samples, n_features)
+            Nonnegative data matrix to factorize.
+
+        y : ndarray of shape (n_samples,)
+            Weights applied to each entry of `X`.
+            Larger values increase the importance of corresponding entries.
+
+        Returns
+        -------
+        self
+            Fitted WNMF model.
+        """
+        self.fit_transform(X, y)
+        return self
 
     def transform(self, X: np.ndarray):
         """Transform new data according to the fitted WNMF components.
