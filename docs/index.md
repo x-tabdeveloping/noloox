@@ -14,6 +14,7 @@
 - The most feature-complete or efficient implementation of these algorithms
 - A replacement for scikit-learn
 - An all-in-one machine learning framework
+- A library for complete Bayesian inference. Use a PPL like NumPyro, PyMC or Stan.
 
 ## Basic usage
 
