@@ -35,11 +35,21 @@ cluster_labels = model.fit_predict(X)
 
 | Model | What do I use it for? | JAX or NumPy? | What algorithm? |
 | - | - | - | - |
-| Peax | Cluster 2D data where the number of clusters is unknown. | NumPy | Expectation-Maximization | 
-| SNMF | Factor data, where you expect the factors to be non-negative, but the data is unbounded | JAX | Iterative updates |
-| WNMF | NMF, but you don't want to weight all observations equally. | NumPy | Iterative updates |
-| StudentsTMixture and CauchyMixture | Cluster continuous data in a way that is robust to outliers. | JAX | Expectation-Maximization |
-| DirichletMultinomialMixture | Cluster count data/Short-text topic modelling | JAX | Collapsed Gibbs Sampling |
+| [Peax](https://x-tabdeveloping.github.io/noloox/Peax/) | Cluster 2D data where the number of clusters is unknown. | NumPy | Expectation-Maximization | 
+| [SNMF](https://x-tabdeveloping.github.io/noloox/SNMF/) | Factor data, where you expect the factors to be non-negative, but the data is unbounded | JAX | Iterative updates |
+| [WNMF](https://x-tabdeveloping.github.io/noloox/WNMF/) | NMF, but you don't want to weight all observations equally. | NumPy | Iterative updates |
+| [StudentsTMixture](https://x-tabdeveloping.github.io/noloox/StudentsTMixture/) and [CauchyMixture](https://x-tabdeveloping.github.io/noloox/CauchyMixture/) | Cluster continuous data in a way that is robust to outliers. | JAX | Expectation-Maximization |
+| [DirichletMultinomialMixture](https://x-tabdeveloping.github.io/noloox/DirichletMultinomialMixture/) | Cluster count data/Short-text topic modelling | JAX | Collapsed Gibbs Sampling |
+
+## Tutorials
+
+Here are some things, that you can do in easier in <img src="docs/images/icon.png" width="75px"></img> than in scikit-learn:
+
+- [Cluster count data](https://x-tabdeveloping.github.io/noloox/count_clustering/)
+- [Topic modelling for short texts](https://x-tabdeveloping.github.io/noloox/short_topic_modelling/)
+- [Clustering robust to outliers](https://x-tabdeveloping.github.io/noloox/robust_clustering/)
+- [Find the number of clusters in your dataset](https://x-tabdeveloping.github.io/noloox/n_clusters/)
+- [Find nonnegative factors in sentence embeddings](https://x-tabdeveloping.github.io/noloox/senstopic/)
 
 ## Our philosophy and goals
 
